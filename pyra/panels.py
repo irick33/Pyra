@@ -7,6 +7,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -20,6 +21,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QTreeWidget,
@@ -31,6 +33,24 @@ from PyQt6.QtWidgets import (
 from .services import Job, valid_package
 from .storage import MAX_SOURCE, env_python, project_files, read_source
 from .theme import mono
+from .interpreters import discover
+
+
+class DiscoveryThread(QThread):
+    completed = pyqtSignal(list, list)
+
+    def __init__(self, context, parent=None):
+        super().__init__(parent)
+        self.snapshot = dict(context)
+
+    def run(self):
+        try:
+            found, errors = discover(self.snapshot.get("root"),
+                                     self.snapshot.get("interpreters", []),
+                                     cancelled=self.isInterruptionRequested)
+            self.completed.emit([item.to_dict() for item in found], errors)
+        except Exception as error:
+            self.completed.emit([], [str(error)])
 
 
 def button(text, callback, primary=False):
@@ -60,6 +80,7 @@ def append_output(view, text):
 class EnvironmentPanel(QWidget):
     interpreterChanged = pyqtSignal(str)
     packagesChanged = pyqtSignal()
+    interpretersDiscovered = pyqtSignal(list)
 
     def __init__(self, context, parent=None):
         super().__init__(parent)
@@ -67,16 +88,26 @@ class EnvironmentPanel(QWidget):
         self.job = Job(self)
         self.list_job = Job(self, merged=False)
         self.operation = ""
+        self.discovery = None
         layout = QVBoxLayout(self)
         row = QHBoxLayout()
         self.label = QLabel()
         self.label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        row.addWidget(self.label, 1)
+        self.label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.interpreters = QComboBox()
+        self.interpreters.setMinimumWidth(220)
+        self.interpreters.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.interpreters.setMinimumContentsLength(24)
+        self.interpreters.activated.connect(self._select_interpreter)
+        row.addWidget(self.interpreters, 1)
         self.choose = button("Выбрать Python…", self.choose_interpreter)
+        self.scan = button("Найти Python", self.discover_interpreters)
         self.venv = button("Создать .venv", self.create_venv)
         row.addWidget(self.choose)
+        row.addWidget(self.scan)
         row.addWidget(self.venv)
         layout.addLayout(row)
+        layout.addWidget(self.label)
         row = QHBoxLayout()
         self.package = QLineEdit()
         self.package.setPlaceholderText(
@@ -115,12 +146,68 @@ class EnvironmentPanel(QWidget):
         self.update_context()
 
     def update_context(self):
-        self.label.setText("Python  ·  " + self.context()["interpreter"])
-        self.table.setRowCount(0)
+        context = self.context()
+        selected = context["interpreter"]
+        self.label.setText(selected or "Python не найден. Нажмите «Найти Python» или укажите python.exe.")
+        self.label.setToolTip(selected)
+        self.interpreters.clear()
+        seen = set()
+        for item in context.get("interpreters", []):
+            path = item.get("path", "")
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            version = ".".join(map(str, item.get("version", [])))
+            label = f"Python {version} · {path}"
+            self.interpreters.addItem(label, path)
+            self.interpreters.setItemData(self.interpreters.count() - 1, path, Qt.ItemDataRole.ToolTipRole)
+        if selected and selected not in seen:
+            self.interpreters.addItem(selected, selected)
+        self.interpreters.setCurrentIndex(self.interpreters.findData(selected))
+        if selected != getattr(self, "displayed_interpreter", None):
+            self.table.setRowCount(0)
+        self.displayed_interpreter = selected
+
+    def _select_interpreter(self, index):
+        path = self.interpreters.itemData(index)
+        if path:
+            self.interpreterChanged.emit(path)
+
+    def discover_interpreters(self):
+        if self.discovery and self.discovery.isRunning():
+            self.discovery.requestInterruption()
+            self.scan.setText("Отмена…")
+            return
+        self.discovery = DiscoveryThread(self.context(), self)
+        self.discovery.completed.connect(self._discovered)
+        self.discovery.finished.connect(lambda: self.scan.setText("Найти Python"))
+        self.discovery.finished.connect(self.discovery.deleteLater)
+        self.discovery.finished.connect(lambda: setattr(self, "discovery", None))
+        self.scan.setText("Отменить поиск")
+        self.discovery.start()
+
+    def _discovered(self, found, errors):
+        cancelled = self.discovery and self.discovery.isInterruptionRequested()
+        if cancelled:
+            append_output(self.log, "Поиск Python отменён.\n")
+            return
+        self.interpretersDiscovered.emit(found)
+        self.update_context()
+        append_output(self.log, f"Найдено интерпретаторов: {len(found)}. "
+                      "Если нужного нет, выберите python.exe на любом диске вручную.\n")
+        if errors:
+            append_output(self.log, "\n".join(errors) + "\n")
+
+    def stop_discovery(self):
+        if self.discovery and self.discovery.isRunning():
+            self.discovery.requestInterruption()
+            return self.discovery.wait(50)
+        return True
 
     def _busy(self, active):
         for widget in [
             self.choose,
+            self.interpreters,
             self.venv,
             self.install_button,
             self.package,
@@ -140,6 +227,8 @@ class EnvironmentPanel(QWidget):
 
     def create_venv(self):
         if self.job.active:
+            return
+        if not self._has_python():
             return
         root = Path(self.context()["root"])
         destination = root / ".venv"
@@ -184,6 +273,8 @@ class EnvironmentPanel(QWidget):
     def _pip(self, args):
         if self.job.active:
             return
+        if not self._has_python():
+            return
         self.operation = "pip"
         self.log.setPlainText("Python: " + self.context()["interpreter"] + "\n\n")
         self.job.start(
@@ -201,14 +292,25 @@ class EnvironmentPanel(QWidget):
         self.refresh()
 
     def refresh(self):
-        if not self.job.active:
+        if not self.job.active and not self.list_job.active and self.context()["interpreter"]:
+            self.list_interpreter = self.context()["interpreter"]
             self.list_job.start(
                 self.context()["interpreter"],
                 ["-m", "pip", "--disable-pip-version-check", "list", "--format=json"],
                 self.context()["root"],
+                timeout_ms=15000,
             )
 
+    def _has_python(self):
+        if self.context()["interpreter"]:
+            return True
+        QMessageBox.information(self, "Выберите Python", "Нажмите «Найти Python» или укажите python.exe.")
+        return False
+
     def _listed(self, code, output):
+        if self.list_interpreter != self.context()["interpreter"]:
+            self.refresh()
+            return
         if code != 0:
             append_output(
                 self.log,

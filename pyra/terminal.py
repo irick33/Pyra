@@ -1,10 +1,10 @@
 """A real PTY/ConPTY with an ANSI screen, rather than a command/output textbox."""
 
 import os
+import logging
 import sys
 import threading
 import time
-from pathlib import Path
 
 import pyte
 from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
@@ -12,6 +12,7 @@ from PyQt6.QtGui import QColor, QFontMetricsF, QGuiApplication, QPainter
 from PyQt6.QtWidgets import QMenu, QTabWidget, QWidget
 
 from .services import stop_process_tree
+from .runtime import external_environment
 from .theme import mono
 
 ANSI = {
@@ -55,24 +56,13 @@ class Reader(QThread):
 
     def run(self):
         try:
-            env = os.environ.copy()
+            env = external_environment(self.interpreter, self.extra_env)
             env.update(
                 TERM="xterm-256color",
                 COLORTERM="truecolor",
                 PYTHONIOENCODING="utf-8",
                 PYTHONUNBUFFERED="1",
             )
-            folder = Path(self.interpreter).parent
-            env["PATH"] = str(folder) + os.pathsep + env.get("PATH", "")
-            if (folder.parent / "pyvenv.cfg").exists():
-                env["VIRTUAL_ENV"] = str(folder.parent)
-            else:
-                env.pop("VIRTUAL_ENV", None)
-            for key, value in self.extra_env.items():
-                if value is None:
-                    env.pop(key, None)
-                else:
-                    env[key] = str(value)
             if sys.platform == "win32":
                 from winpty import PtyProcess
 
@@ -108,7 +98,10 @@ class Reader(QThread):
             signal = getattr(self.process, "signalstatus", None)
             self.exit_code = int(status if status is not None else -(signal or 1))
         except Exception as error:
-            self._deliver(f"\r\nОшибка терминала: {error}\r\n")
+            logging.getLogger("pyra").exception("Terminal failed")
+            self._deliver(f"\r\nОшибка терминала: {error}\r\n"
+                          "Проверьте Python в меню «Окружение» и рабочую папку. "
+                          "Подробности: Справка → Журнал ошибок.\r\n")
         finally:
             self.ended.emit(self.exit_code)
 

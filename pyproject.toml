@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyra-ide"
-version = "0.2.0"
+version = "0.2.1rc1"
 description = "A focused native Python IDE"
 requires-python = ">=3.10,<3.16"
 dynamic = ["dependencies"]
@@ -26,3 +26,7 @@ select = ["E4", "E7", "E9", "F"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"tools/benchmark.py" = ["E402"]
+"tools/capture_preview.py" = ["E402"]

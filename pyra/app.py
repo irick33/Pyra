@@ -1,4 +1,5 @@
 import argparse
+import logging
 import sys
 import traceback
 from pathlib import Path
@@ -13,6 +14,8 @@ def main():
     from PyQt6.QtWidgets import QApplication, QMessageBox
     from .theme import STYLE, app_icon, dark_palette
     from .window import MainWindow
+    from .diagnostics import setup_logging
+    from .runtime import initialize_external_processes
 
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Pyra")
@@ -25,6 +28,8 @@ def main():
         QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
     )
     data_dir.mkdir(parents=True, exist_ok=True)
+    setup_logging(data_dir)
+    initialize_external_processes()
     lock = QLockFile(str(data_dir / "session.lock"))
     lock.setStaleLockTime(0)
     if not lock.tryLock(0):
@@ -37,7 +42,9 @@ def main():
 
     def handle_exception(kind, value, tb):
         text = "".join(traceback.format_exception(kind, value, tb))
-        print(text, file=sys.stderr)
+        logging.getLogger("pyra").error("Unhandled exception\n%s", text)
+        if sys.stderr is not None:
+            print(text, file=sys.stderr)
         try:
             (data_dir / "last_error.log").write_text(text, encoding="utf-8")
         except OSError:

@@ -45,6 +45,7 @@ class Engine:
                     encoding="utf-8",
                     timeout=5,
                     check=True,
+                    creationflags=0x08000000 if sys.platform == "win32" else 0,
                 )
                 response = json.loads(completed.stdout)
                 if "error" in response:

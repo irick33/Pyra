@@ -1,5 +1,6 @@
 import codecs
 import json
+import logging
 import os
 import re
 import subprocess
@@ -9,26 +10,26 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, pyqtSignal
 
+from .runtime import external_environment, service_command
+
 
 def ruff_command():
     """Use the native binary directly, avoiding an extra Python startup per check."""
-    executable = Path(sys.executable).parent / ("ruff.exe" if sys.platform == "win32" else "ruff")
+    name = "ruff.exe" if sys.platform == "win32" else "ruff"
+    if getattr(sys, "frozen", False):
+        # Native Ruff binary is bundled as a data binary at build time.
+        executable = Path(sys._MEIPASS) / "tools" / name
+        return str(executable), []
+    executable = Path(sys.executable).parent / name
     if executable.is_file():
         return str(executable), []
     return sys.executable, ["-m", "ruff"]
 
 
 def process_environment(interpreter=None):
-    env = QProcessEnvironment.systemEnvironment()
-    env.insert("PYTHONIOENCODING", "utf-8")
-    env.insert("PYTHONUNBUFFERED", "1")
-    if interpreter:
-        folder = Path(interpreter).parent
-        env.insert("PATH", str(folder) + os.pathsep + env.value("PATH"))
-        if folder.name.lower() in {"scripts", "bin"} and (folder.parent / "pyvenv.cfg").exists():
-            env.insert("VIRTUAL_ENV", str(folder.parent))
-        else:
-            env.remove("VIRTUAL_ENV")
+    env = QProcessEnvironment()
+    for key, value in external_environment(interpreter).items():
+        env.insert(key, value)
     return env
 
 
@@ -56,25 +57,39 @@ class Job(QObject):
         self.error_decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._stdin = None
         self.active = False
+        self.timeout = QTimer(self)
+        self.timeout.setSingleShot(True)
+        self.timeout.timeout.connect(self._timed_out)
+        self.timed_out = False
 
     @property
     def error_text(self):
         return self.error_buffer.decode("utf-8", errors="replace")
 
-    def start(self, program, args, cwd=None, stdin=None):
+    def start(self, program, args, cwd=None, stdin=None, timeout_ms=0):
         if self.active:
             return False
         self.buffer.clear()
         self.error_buffer.clear()
         self.decoder.reset()
         self.error_decoder.reset()
+        self.timed_out = False
         self._stdin = stdin.encode("utf-8") if stdin is not None else None
         self.active = True
         self.running.emit(True)
         self.process.setProcessEnvironment(process_environment(program))
         self.process.setWorkingDirectory(str(cwd or Path.cwd()))
         self.process.start(str(program), [str(a) for a in args])
+        if timeout_ms:
+            self.timeout.start(timeout_ms)
         return True
+
+    def _timed_out(self):
+        self.timed_out = True
+        message = "Операция превысила время ожидания; проверьте путь Python и журнал ошибок.\n"
+        self.error_buffer.extend(message.encode("utf-8"))
+        self.output.emit(message)
+        self.process.kill()
 
     def _send_stdin(self):
         if self._stdin is not None:
@@ -100,6 +115,12 @@ class Job(QObject):
             return
         self._read()
         self._read_error()
+        self.timeout.stop()
+        if self.timed_out:
+            code = -2
+        if code not in (0, 1) or self.timed_out:
+            logging.getLogger("pyra").warning("Process %s exited %s: %s", self.process.program(),
+                                              code, self.error_text[-2000:])
         self.active = False
         self.running.emit(False)
         self.done.emit(code, self.buffer.decode("utf-8", errors="replace"))
@@ -107,6 +128,7 @@ class Job(QObject):
     def _error(self, error):
         if error == QProcess.ProcessError.FailedToStart:
             self.buffer.extend(self.process.errorString().encode())
+            self.error_buffer.extend(self.process.errorString().encode())
             self._finished(-1)
 
     def stop(self):
@@ -128,7 +150,7 @@ class Intelligence(QObject):
         self.process.setProcessEnvironment(process_environment())
         self.process.setWorkingDirectory(str(Path(__file__).resolve().parent.parent))
         self.process.readyReadStandardOutput.connect(self._read)
-        self.process.readyReadStandardError.connect(lambda: self.process.readAllStandardError())
+        self.process.readyReadStandardError.connect(self._stderr)
         self.process.errorOccurred.connect(self._failed)
         self.process.finished.connect(self._exited)
         self.buffer = bytearray()
@@ -139,6 +161,21 @@ class Intelligence(QObject):
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self._timeout)
         self.closing = False
+        self.restarting = False
+        self.worker_interpreter = None
+        self.error_buffer = bytearray()
+
+    def _stderr(self):
+        self.error_buffer.extend(bytes(self.process.readAllStandardError()))
+        del self.error_buffer[:-8192]
+
+    def restart(self):
+        self.pending.clear()
+        self.current = None
+        self.timer.stop()
+        self.restarting = self.process.state() != QProcess.ProcessState.NotRunning
+        if self.restarting:
+            self.process.kill()
 
     def request(self, **payload):
         self.sequence += 1
@@ -151,10 +188,27 @@ class Intelligence(QObject):
         self._next()
 
     def _next(self):
-        if self.current or not self.pending or self.closing:
+        if self.current or not self.pending or self.closing or self.restarting:
+            return
+        request = next(iter(self.pending.values()))
+        interpreter = request.get("interpreter")
+        if (getattr(sys, "frozen", False) and self.worker_interpreter != interpreter
+                and self.process.state() != QProcess.ProcessState.NotRunning):
+            self.restarting = True
+            self.process.kill()
             return
         if self.process.state() == QProcess.ProcessState.NotRunning:
-            self.process.start(sys.executable, ["-m", "pyra.worker"])
+            try:
+                program, args = service_command("worker", interpreter)
+            except ValueError as error:
+                self.pending.popitem(last=False)
+                self.failure.emit(request, str(error))
+                QTimer.singleShot(0, self._next)
+                return
+            self.error_buffer.clear()
+            self.worker_interpreter = interpreter
+            self.process.setProcessEnvironment(process_environment(program))
+            self.process.start(program, args)
         _, self.current = self.pending.popitem(last=False)
         self.process.write((json.dumps(self.current) + "\n").encode("utf-8"))
         self.timer.start(15000)
@@ -172,6 +226,7 @@ class Intelligence(QObject):
                 self.timer.stop()
                 self.current = None
                 if "error" in response:
+                    logging.getLogger("pyra").warning("Intelligence: %s", response["error"][:2000])
                     self.failure.emit(request, response["error"])
                 else:
                     self.result.emit(request, response["result"])
@@ -181,6 +236,7 @@ class Intelligence(QObject):
         if self.current:
             self.failure.emit(self.current, "Анализ превысил 15 секунд; процесс перезапущен")
         self.current = None
+        self.restarting = True
         self.process.kill()
 
     def _failed(self, error):
@@ -190,8 +246,12 @@ class Intelligence(QObject):
     def _exited(self, *_):
         self.timer.stop()
         self.buffer.clear()
+        self.restarting = False
         if self.current:
-            self.failure.emit(self.current, "Процесс анализа завершился")
+            message = (self.error_buffer.decode("utf-8", errors="replace")[-2000:]
+                       or self.process.errorString())
+            logging.getLogger("pyra").error("Intelligence: %s", message)
+            self.failure.emit(self.current, "Процесс анализа завершился: " + message)
             self.current = None
         if not self.closing:
             QTimer.singleShot(100, self._next)

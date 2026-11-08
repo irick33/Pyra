@@ -1,7 +1,7 @@
 """Small asynchronous DAP client. debugpy supplies the actual Python debugger."""
 
 import json
-import sys
+from .runtime import service_command, external_environment
 
 from PyQt6.QtCore import QObject, QProcess, QTimer, pyqtSignal
 
@@ -26,6 +26,7 @@ class DAPClient(QObject):
         self.process.readyReadStandardError.connect(self._stderr)
         self.process.finished.connect(self._finished)
         self.process.errorOccurred.connect(self._error)
+        self.process.started.connect(self._initialize)
         self.sequence = 0
         self.callbacks = {}
         self.buffer = bytearray()
@@ -39,6 +40,12 @@ class DAPClient(QObject):
 
     def launch(self, program, interpreter, cwd, args=None, breakpoints=None, integrated=False):
         if self.active:
+            return False
+        try:
+            adapter_program, adapter_args = service_command("debug-adapter", interpreter)
+        except ValueError as error:
+            self.output.emit(str(error) + "\n")
+            self.state.emit(str(error))
             return False
         self.buffer.clear()
         self.callbacks.clear()
@@ -56,16 +63,15 @@ class DAPClient(QObject):
             "redirectOutput": True,
             "justMyCode": True,
             "subProcess": False,
-            "env": {"PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
+            "env": external_environment(interpreter),
         }
-        self.process.started.connect(self._initialize)
-        self.process.start(sys.executable, ["-m", "debugpy.adapter"])
+        self.process.setProcessEnvironment(process_environment(adapter_program))
+        self.process.start(adapter_program, adapter_args)
         self.state.emit("Запуск отладчика…")
         self.timeout.start(20000)
         return True
 
     def _initialize(self):
-        self.process.started.disconnect(self._initialize)
         self.request(
             "initialize",
             {

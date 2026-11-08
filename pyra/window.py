@@ -1,7 +1,7 @@
 import json
 import keyword
+import logging
 import shutil
-import sys
 from pathlib import Path
 
 from PyQt6.QtCore import (
@@ -52,6 +52,9 @@ from .panels import (
     log_view,
 )
 from .services import Intelligence, Job, ruff_command
+from .runtime import default_python, usable_python_path
+from .interpreters import PROBE_CODE, parse_probe
+from .diagnostics import show_diagnostics
 from .storage import (
     IGNORED,
     MAX_SOURCE,
@@ -73,7 +76,7 @@ class ProjectFilter(QSortFilterProxyModel):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, project=None, data_dir=None, restore=True):
+    def __init__(self, project=None, data_dir=None, restore=True, discover_missing=True):
         super().__init__()
         self.resize(1440, 920)
         self.setMinimumSize(950, 650)
@@ -87,8 +90,13 @@ class MainWindow(QMainWindow):
         if not isinstance(self.config, dict):
             self.config = {}
         self.root = None
-        self.interpreter = getattr(sys, "_base_executable", sys.executable)
-        self.interpreter_version = list(sys.version_info[:3])
+        known = self.config.get("interpreters", [])
+        self.config["interpreters"] = [x for x in known if isinstance(x, dict) and x.get("path")] if isinstance(known, list) else []
+        preferred = self.config.get("default_interpreter", "")
+        self.interpreter = preferred if usable_python_path(preferred) else default_python()
+        self.interpreter_version = (
+            interpreter_version_hint(self.interpreter) if self.interpreter else None
+        )
         self.run_args, self.run_cwd = [], ""
         self.runner = None
         self.analysis_target = None
@@ -117,6 +125,7 @@ class MainWindow(QMainWindow):
         self.debounce.setInterval(650)
         self.debounce.timeout.connect(self.analyze)
         self._build_ui()
+        self.env_probe.running.connect(lambda active: self.environment._busy(active or self.environment.job.active))
         self._build_menus()
         self.recovery_timer = QTimer(self)
         self.recovery_timer.setInterval(15000)
@@ -142,6 +151,8 @@ class MainWindow(QMainWindow):
                                 editor.markerAdd(line - 1, Editor.BREAKPOINT)
             QTimer.singleShot(150, self.recover)
         self.update_ui()
+        if not self.interpreter and discover_missing:
+            QTimer.singleShot(0, self.environment.discover_interpreters)
 
     def context(self):
         editor = self.editor()
@@ -150,6 +161,7 @@ class MainWindow(QMainWindow):
                 self.root or (editor.path.parent if editor and editor.path else Path.home())
             ),
             "interpreter": self.interpreter,
+            "interpreters": self.config.get("interpreters", []),
         }
 
     def _build_ui(self):
@@ -298,6 +310,7 @@ class MainWindow(QMainWindow):
         self.environment = EnvironmentPanel(self.context)
         self.environment.interpreterChanged.connect(self.set_interpreter)
         self.environment.packagesChanged.connect(self._packages_changed)
+        self.environment.interpretersDiscovered.connect(self._remember_discovered)
         self.debug_panel = DebugPanel(self.debugger)
         self.debug_panel.openLocation.connect(self._debug_location)
         self.git_panel = GitPanel(self.context)
@@ -424,6 +437,7 @@ class MainWindow(QMainWindow):
         self._action(view, "Перенос строк", "Alt+Z", self.toggle_wrap)
         help_menu = self.menuBar().addMenu("Справка")
         self._action(help_menu, "Руководство", "F1", self.open_readme)
+        self._action(help_menu, "Журнал ошибок", "", self.show_diagnostics)
         self._action(help_menu, "О Pyra", "", self.about)
 
     def editor(self):
@@ -516,6 +530,7 @@ class MainWindow(QMainWindow):
             self.debugger.active
             or (self.runner and self.runner.alive)
             or self.environment.job.active
+            or self.env_probe.active
             or self.git_panel.job.active
         ):
             self.statusBar().showMessage(
@@ -535,19 +550,14 @@ class MainWindow(QMainWindow):
         settings = self.config.get("projects", {}).get(str(self.root), {})
         detected = env_python(self.root / ".venv")
         interpreter = settings.get("interpreter")
-        self.interpreter = (
-            interpreter
-            if interpreter and Path(interpreter).is_file()
-            else str(
-                detected
-                if detected.is_file()
-                else Path(getattr(sys, "_base_executable", sys.executable))
-            )
-        )
+        preferred = self.config.get("default_interpreter", "")
+        self.interpreter = next((str(item) for item in (interpreter, detected, preferred, default_python())
+                                 if usable_python_path(item)), "")
         self.run_args = settings.get("args", [])
-        self.interpreter_version = interpreter_version_hint(self.interpreter) or settings.get(
-            "python_version"
-        )
+        self.interpreter_version = interpreter_version_hint(self.interpreter) if self.interpreter else None
+        if self.interpreter == interpreter:
+            self.interpreter_version = self.interpreter_version or settings.get("python_version")
+        self.intelligence.restart()
         self.run_cwd = settings.get("cwd") or str(self.root)
         if not Path(self.run_cwd).is_dir():
             self.run_cwd = str(self.root)
@@ -555,6 +565,9 @@ class MainWindow(QMainWindow):
         self.project_label.setText("  /  " + self.root.name)
         self.update_ui()
         self._persist()
+        if interpreter and not usable_python_path(interpreter):
+            logging.getLogger("pyra").warning("Saved project Python is unavailable: %s", interpreter)
+            self.statusBar().showMessage("Сохранённый Python недоступен. Проверьте выбор в меню «Окружение».", 8000)
         return True
 
     def open_demo(self):
@@ -785,6 +798,7 @@ class MainWindow(QMainWindow):
             ],
             self.context()["root"],
             stdin=payload[2],
+            timeout_ms=15000,
         )
 
     def _lint_done(self, code, output):
@@ -987,6 +1001,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Текст изменился; повторите форматирование.", 4000)
 
     def _prepare_run(self):
+        if not self.require_python():
+            return None
         editor = self.editor()
         if not editor or not editor.is_python:
             self.statusBar().showMessage("Откройте Python-файл для запуска.", 4000)
@@ -1014,6 +1030,8 @@ class MainWindow(QMainWindow):
         self.update_ui()
 
     def run_tests(self, framework):
+        if not self.require_python():
+            return
         if not self.root:
             self.statusBar().showMessage("Сначала откройте проект.", 4000)
             return
@@ -1114,36 +1132,67 @@ class MainWindow(QMainWindow):
         if self.env_probe.active:
             self.statusBar().showMessage("Проверяется выбранный Python…", 2500)
             return
-        if self.debugger.active or (self.runner and self.runner.alive):
-            self.statusBar().showMessage("Сначала остановите программу.", 5000)
+        if self.debugger.active or (self.runner and self.runner.alive) or self.environment.job.active:
+            self.statusBar().showMessage("Сначала остановите программу или установку пакетов.", 5000)
+            self.environment.update_context()
+            return
+        if not usable_python_path(path):
+            self.error("Выберите Python", "Укажите существующий python.exe, а не Pyra.exe, py.exe или pythonw.exe.")
+            self.environment.update_context()
             return
         self.candidate_interpreter = path
+        self.statusBar().showMessage("Проверяется выбранный Python…")
         self.env_probe.start(
             path,
-            [
-                "-c",
-                "import json,sys; print(json.dumps({'version': list(sys.version_info[:3]), 'executable': sys.executable}))",
-            ],
+            ["-I", "-c", PROBE_CODE],
+            timeout_ms=5000,
         )
 
     def _interpreter_probed(self, code, output):
         if code != 0:
-            self.error("Не удалось запустить Python", output + self.env_probe.error_text)
+            self.error("Не удалось запустить Python", output + self.env_probe.error_text
+                       + "\nВыберите другой python.exe. Предыдущее окружение сохранено.")
+            self.environment.update_context()
             return
         try:
-            self.interpreter_version = json.loads(output)["version"]
-        except (ValueError, KeyError):
-            self.error("Проверка Python", "Интерпретатор не вернул информацию о версии.")
+            info = parse_probe(self.candidate_interpreter, output)
+        except ValueError as error:
+            self.error("Проверка Python", error)
+            self.environment.update_context()
             return
-        self.interpreter = self.candidate_interpreter
+        self.interpreter = info.path
+        self.interpreter_version = info.version
+        self._remember_interpreters([info.to_dict()])
+        self.config["default_interpreter"] = self.interpreter
         self._packages_changed()
         self.environment.update_context()
         self.environment.refresh()
         self.update_ui()
         self._persist()
+        self.statusBar().showMessage("Выбран " + info.label + ". Новые терминалы используют это окружение.", 6000)
+
+    def _remember_interpreters(self, items):
+        known = {item["path"]: item for item in self.config.get("interpreters", [])}
+        for item in items:
+            known[item["path"]] = item
+        self.config["interpreters"] = list(known.values())[-48:]
+
+    def _remember_discovered(self, items):
+        self._remember_interpreters(items)
+        self._persist()
+        if not self.interpreter and items and not self.closing:
+            self.set_interpreter(items[0]["path"])
+
+    def require_python(self):
+        if usable_python_path(self.interpreter):
+            return True
+        self.show_environment()
+        self.error("Python не найден", "Нажмите «Найти Python» или выберите python.exe на вашем диске. "
+                   "Pyra может редактировать файлы без установленного Python.")
+        return False
 
     def _packages_changed(self):
-        self.intelligence.process.kill()
+        self.intelligence.restart()
         self.debounce.start()
 
     def _panel_changed(self, index):
@@ -1294,7 +1343,7 @@ class MainWindow(QMainWindow):
         version = (
             " " + ".".join(map(str, self.interpreter_version)) if self.interpreter_version else ""
         )
-        self.python_button.setText("Python" + version + " · " + env_name)
+        self.python_button.setText("Python" + version + " · " + env_name if self.interpreter else "Выбрать Python…")
         self.python_button.setToolTip(self.interpreter)
         active = self.debugger.active or bool(self.runner and self.runner.alive)
         self.run_button.setEnabled(not active)
@@ -1427,9 +1476,18 @@ class MainWindow(QMainWindow):
         )
 
     def error(self, title, error):
+        logging.getLogger("pyra").error("%s: %s", title, str(error)[:8000])
         QMessageBox.warning(self, title, str(error)[:8000])
 
+    def show_diagnostics(self):
+        show_diagnostics(self, self.data_dir, self.interpreter)
+
     def closeEvent(self, event):
+        if not self.environment.stop_discovery():
+            self.statusBar().showMessage("Завершение поиска Python…", 2000)
+            QTimer.singleShot(200, self.close)
+            event.ignore()
+            return
         for editor in self.editors():
             if not self.confirm_close(editor):
                 event.ignore()
@@ -1441,7 +1499,9 @@ class MainWindow(QMainWindow):
         self._persist()
         self.search_panel.shutdown()
         self.debugger.close()
-        if not self.terminals.shutdown() or not self.run_terminals.shutdown():
+        terminals_closed = self.terminals.shutdown()
+        runs_closed = self.run_terminals.shutdown()
+        if not terminals_closed or not runs_closed:
             self.closing = False
             self.recovery_timer.start()
             self.statusBar().showMessage("Ожидание завершения терминала. Повторите закрытие.", 5000)

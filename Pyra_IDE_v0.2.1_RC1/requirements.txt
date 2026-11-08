@@ -1,0 +1,9 @@
+PyQt6==6.12.0
+PyQt6-QScintilla==2.14.1
+jedi==0.20.1
+parso==0.8.7
+debugpy==1.8.22
+pyte==0.8.2
+ruff==0.17.4
+ptyprocess==0.7.0; sys_platform != 'win32'
+pywinpty==3.1.2; sys_platform == 'win32'

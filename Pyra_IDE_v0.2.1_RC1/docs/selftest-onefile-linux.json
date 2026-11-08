@@ -1,0 +1,66 @@
+{
+  "version": "0.2.1rc1",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "ide_python": "3.12.14",
+  "frozen": true,
+  "checks": [
+    {
+      "name": "interpreter",
+      "passed": true,
+      "elapsed_ms": 47.63
+    },
+    {
+      "name": "venv_with_unicode_path",
+      "passed": true,
+      "elapsed_ms": 154.26
+    },
+    {
+      "name": "gui_open_project_file",
+      "passed": true,
+      "elapsed_ms": 0.01
+    },
+    {
+      "name": "select_venv",
+      "passed": true,
+      "elapsed_ms": 0.0
+    },
+    {
+      "name": "run_terminal_input_unicode",
+      "passed": true,
+      "elapsed_ms": 63.11
+    },
+    {
+      "name": "bundled_jedi_in_clean_venv",
+      "passed": true,
+      "elapsed_ms": 1160.49
+    },
+    {
+      "name": "bundled_ruff_diagnostics",
+      "passed": true,
+      "elapsed_ms": 19.28
+    },
+    {
+      "name": "bundled_ruff_format",
+      "passed": true,
+      "elapsed_ms": 30.6
+    },
+    {
+      "name": "bundled_debugpy_breakpoint_and_input",
+      "passed": true,
+      "elapsed_ms": 2582.8
+    }
+  ],
+  "passed": true,
+  "interpreter": {
+    "path": "/home/agent/.local/share/uv/python/cpython-3.15-linux-x86_64-gnu/bin/python3.15",
+    "version": [
+      3,
+      15,
+      1
+    ],
+    "prefix": "/home/agent/.local/share/uv/python/cpython-3.15.1-linux-x86_64-gnu",
+    "base_prefix": "/home/agent/.local/share/uv/python/cpython-3.15.1-linux-x86_64-gnu",
+    "bits": 64,
+    "source": "Выбран вручную"
+  }
+}

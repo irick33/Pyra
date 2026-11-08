@@ -1,0 +1,53 @@
+{
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+  "qt_platform": "offscreen",
+  "method": "Fresh process to first paint marker. OS cache NOT cleared. First sample is not a true cold-boot benchmark.",
+  "targets": {
+    "run.py": {
+      "samples_ms": [
+        389.11,
+        429.61,
+        381.58,
+        496.08,
+        357.58,
+        396.8,
+        354.13
+      ],
+      "first_sample_ms": 389.11,
+      "median_ms": 389.11,
+      "max_ms": 496.08,
+      "entry_bytes": 1318
+    },
+    "dist/onedir/Pyra/Pyra": {
+      "samples_ms": [
+        388.67,
+        367.86,
+        405.58,
+        629.26,
+        410.96,
+        622.74,
+        1004.76
+      ],
+      "first_sample_ms": 388.67,
+      "median_ms": 410.96,
+      "max_ms": 1004.76,
+      "entry_bytes": 1930192
+    },
+    "dist/onefile/Pyra": {
+      "samples_ms": [
+        3120.48,
+        2496.21,
+        3101.14,
+        3852.02,
+        3381.06,
+        2345.37,
+        2253.78
+      ],
+      "first_sample_ms": 3120.48,
+      "median_ms": 3101.14,
+      "max_ms": 3852.02,
+      "entry_bytes": 86566728
+    }
+  }
+}

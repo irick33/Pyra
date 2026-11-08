@@ -1,0 +1,12 @@
+....................................................                     [100%]
+=============================== warnings summary ===============================
+tests/test_integration.py::test_true_terminal_input_and_unicode
+tests/test_integration.py::test_terminal_stops_an_infinite_output_process
+tests/test_integration.py::test_gui_debugger_supports_interactive_input
+tests/test_python315.py::test_new315_syntax_run_lint_and_format
+tests/test_python315.py::test_normal_run_has_no_debugger_or_analysis_dependency
+  /opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pty.py:95: DeprecationWarning: This process (pid=5) is multi-threaded, use of forkpty() may lead to deadlocks in the child.
+    pid, fd = os.forkpty()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+52 passed, 5 warnings in 23.27s

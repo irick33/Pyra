@@ -1,0 +1,15 @@
+{
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "python": "3.15.1",
+  "qt_platform": "offscreen",
+  "startup_to_first_offscreen_paint_ms": 155.77,
+  "idle_gui_rss_mib": 84.37,
+  "source_lines": 10002,
+  "source_bytes_before_edit": 240016,
+  "load_source_to_paint_ms": 10.26,
+  "key_samples": 200,
+  "key_median_ms": 0.936,
+  "key_p95_ms": 1.65,
+  "gui_rss_after_edit_mib": 88.33,
+  "scope": "Main GUI process, offscreen, no debugger, terminal or analysis worker. Cached dependencies. Not a Windows benchmark."
+}

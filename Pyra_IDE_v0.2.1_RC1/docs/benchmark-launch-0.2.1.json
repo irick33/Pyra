@@ -1,0 +1,51 @@
+{
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "ide_python": "3.12.14",
+  "target_python": "Python 3.12.14",
+  "gui_process_to_first_paint": {
+    "samples_ms": [
+      362.631,
+      498.655,
+      355.713,
+      369.437,
+      345.193,
+      346.982,
+      396.286
+    ],
+    "median_ms": 362.631,
+    "max_ms": 498.655
+  },
+  "run_to_first_output": {
+    "samples_ms": [
+      37.884,
+      26.824,
+      27.723,
+      29.378,
+      26.475,
+      29.436,
+      33.993
+    ],
+    "median_ms": 29.378,
+    "max_ms": 37.884
+  },
+  "direct_python_to_first_output": {
+    "samples_ms": [
+      24.348,
+      13.382,
+      16.862,
+      13.253,
+      15.074,
+      13.035,
+      26.257
+    ],
+    "median_ms": 15.074,
+    "max_ms": 26.257
+  },
+  "notes": [
+    "Linux/offscreen if QT_QPA_PLATFORM=offscreen; not a Windows measurement.",
+    "Startup includes Python process boot/imports, QApplication and first paint; no restored project.",
+    "Repeated new processes, OS filesystem cache is not cleared.",
+    "Run starts an actual fresh Python process in the IDE terminal; no debugger.",
+    "Direct baseline uses pipes rather than a terminal; timing difference includes PTY and GUI output handling."
+  ]
+}

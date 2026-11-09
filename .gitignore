@@ -1,25 +1,9 @@
-# Python
+.ide-venv/
+.venv/
 __pycache__/
 *.pyc
-.venv/
-venv/
 .pytest_cache/
-
-# Build
+.ruff_cache/
 build/
 dist/
-*.exe
-*.spec
-
-# IDE
-.idea/
-.vscode/
-
-# Secrets
-.env
-.env.*
-!.env.example
-
-# Temporary files
-*.log
-*.tmp
+*.egg-info/

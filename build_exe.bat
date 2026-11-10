@@ -3,8 +3,15 @@
 setlocal
 cd /d "%~dp0"
 
-:: Путь к установленному Python
+:: Python на диске D:
 set "PYRA_BOOTSTRAP_PYTHON=D:\Python315\python.exe"
+
+:: Проверка Python
+if not exist "%PYRA_BOOTSTRAP_PYTHON%" (
+    echo ERROR: Python not found at %PYRA_BOOTSTRAP_PYTHON%
+    pause
+    exit /b 1
+)
 
 :: Режим сборки
 set "PYRA_MODE=%~1"
@@ -18,18 +25,24 @@ echo Usage: build_exe.bat [onefile ^| onedir ^| both]
 exit /b 2
 
 :build
+echo Preparing Pyra environment...
+
 call start.bat --prepare-only
 if errorlevel 1 goto failure
 
+echo Installing build dependencies...
+
 ".ide-venv\Scripts\python.exe" -m pip install --disable-pip-version-check -r requirements-build.txt
 if errorlevel 1 goto failure
+
+echo Building Pyra.exe...
 
 ".ide-venv\Scripts\python.exe" tools\build.py --mode "%PYRA_MODE%"
 if errorlevel 1 goto failure
 
 echo.
 echo Build successful!
-echo See dist\onefile and/or dist\onedir.
+echo Check dist\onefile or dist\onedir
 pause
 exit /b 0
 
